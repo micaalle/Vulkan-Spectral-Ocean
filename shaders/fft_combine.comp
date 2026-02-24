@@ -1,0 +1,26 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set=0, binding=0, rg32f) uniform readonly image2D in0;
+layout(set=0, binding=1, rg32f) uniform readonly image2D in1;
+layout(set=0, binding=2, rg32f) uniform writeonly image2D outFFT;
+
+layout(push_constant) uniform PC {
+    float windDispWeight;
+    float _pad0;
+    float _pad1;
+    float _pad2;
+} pc;
+
+#define N 256
+
+void main(){
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= 3*N || gid.y >= N) return;
+
+    vec2 a = imageLoad(in0, gid).rg;
+    vec2 b = imageLoad(in1, gid).rg;
+
+    vec2 outv = a + b * pc.windDispWeight;
+    imageStore(outFFT, gid, vec4(outv, 0.0, 0.0));
+}

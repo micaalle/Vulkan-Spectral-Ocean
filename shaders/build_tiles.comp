@@ -1,0 +1,44 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set=0, binding=0, rg32f) uniform readonly image2D inH;
+layout(set=0, binding=1, rg32f) uniform writeonly image2D outTiled;
+
+#define PI 3.141592653589793
+#define N  256
+#define PATCH_SIZE 512.0
+
+vec2 cmul(vec2 a, vec2 b){ return vec2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
+
+void main(){
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= 3*N || gid.y >= N) return;
+
+    int tile = gid.x / N;
+    int x = gid.x - tile * N;
+    int y = gid.y;
+
+    vec2 H = imageLoad(inH, ivec2(x, y)).rg;
+
+    if (tile == 0){
+        imageStore(outTiled, gid, vec4(H, 0, 0));
+        return;
+    }
+
+    int ix = (x < N/2) ? x : (x - N);
+    int iy = (y < N/2) ? y : (y - N);
+    vec2 k = 2.0 * PI * vec2(float(ix), float(iy)) / PATCH_SIZE;
+    float klen = length(k);
+    if (klen < 1e-6){
+        imageStore(outTiled, gid, vec4(0,0,0,0));
+        return;
+    }
+
+    // i*H = (-Im, Re)
+    vec2 iH = vec2(-H.y, H.x);
+
+    float s = (tile == 1) ? (k.x / klen) : (k.y / klen);
+    vec2 outv = iH * s;
+    imageStore(outTiled, gid, vec4(outv, 0, 0));
+}

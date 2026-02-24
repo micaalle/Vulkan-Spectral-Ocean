@@ -1,0 +1,103 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set=0, binding=0, rg32f) uniform writeonly image2D outH;
+
+layout(push_constant) uniform Push {
+    float t;
+    float windX;
+    float windY;
+    float amp;
+    float windSpeed;
+    float _pad0;
+    float _pad1;
+    float _pad2;
+} pc;
+
+#define PI 3.141592653589793
+#define G  9.81
+#define N  256
+
+vec2 cmul(vec2 a, vec2 b){ return vec2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
+vec2 cconj(vec2 a){ return vec2(a.x, -a.y); }
+
+uint hash_u32(uint x){
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+float hash01(uvec2 p, uint seed){
+    uint h = hash_u32(p.x * 1664525u + p.y * 1013904223u + seed);
+    return float(h) / 4294967296.0;
+}
+
+// Box-Muller Gaussian
+vec2 gaussian(uvec2 p, uint baseSeed){
+    float u1 = max(1e-6, hash01(p, baseSeed + 0u));
+    float u2 = hash01(p, baseSeed + 1u);
+    float r = sqrt(-2.0 * log(u1));
+    float th = 2.0 * PI * u2;
+    return r * vec2(cos(th), sin(th));
+}
+
+float phillips(vec2 k, vec2 wdir, float wSpeed, float A){
+    float klen = length(k);
+    if (klen < 1e-6) return 0.0;
+
+    float k2 = klen*klen;
+    float k4 = k2*k2;
+
+    float L  = (wSpeed*wSpeed) / G;
+    float L2 = L*L;
+
+    vec2 kh = k / klen;
+    float kw = dot(kh, wdir);
+
+    float damping = 0.001;
+    float l2 = (L * damping) * (L * damping);
+
+    float P = A * exp(-1.0 / (k2 * L2)) / k4 * (kw*kw) * exp(-k2 * l2);
+    float cap = exp(-k2 * 0.0005);
+    return P * cap;
+}
+
+void main(){
+    ivec2 id = ivec2(gl_GlobalInvocationID.xy);
+    if (id.x >= N || id.y >= N) return;
+
+    // center freq at 0
+    int ix = (id.x < N/2) ? id.x : (id.x - N);
+    int iy = (id.y < N/2) ? id.y : (id.y - N);
+
+    float patchSize = max(1.0, pc._pad0);
+    uint  baseSeed  = uint(pc._pad1);
+
+    vec2 k = 2.0 * PI * vec2(float(ix), float(iy)) / patchSize;
+
+    vec2 wdir = normalize(vec2(pc.windX, pc.windY));
+    float P = phillips(k, wdir, pc.windSpeed, pc.amp);
+
+    // independent complex Gaussians for k and -k
+    uvec2 uid  = uvec2(id);
+    uvec2 uidm = uvec2((N - uint(id.x)) & (N-1), (N - uint(id.y)) & (N-1));
+
+    vec2 gk  = gaussian(uid,  baseSeed);
+    vec2 gmk = gaussian(uidm ^ uvec2(17u, 53u), baseSeed ^ 0x9e3779b9u);
+
+    vec2 H0k  = gk  * sqrt(max(P, 0.0) * 0.5);
+    vec2 H0mk = gmk * sqrt(max(P, 0.0) * 0.5);
+
+    float klen = length(k);
+    float w = sqrt(G * klen);
+    float wt = w * pc.t;
+    vec2 eiwt   = vec2(cos(wt),  sin(wt));
+    vec2 e_miwt = vec2(cos(wt), -sin(wt));
+
+    vec2 H = cmul(H0k, eiwt) + cmul(cconj(H0mk), e_miwt);
+
+    imageStore(outH, id, vec4(H, 0.0, 0.0));
+}

@@ -1,0 +1,118 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set=0, binding=0) uniform sampler2D uFFT;
+layout(set=0, binding=1) uniform sampler2D uFoamPrev;
+
+// ping-pong foam texture
+layout(set=0, binding=2, r16f) uniform writeonly image2D uFoamOut;
+
+layout(push_constant) uniform PC {
+    float dt;
+    float patchSize;
+    float choppy;
+    float flowScale;
+    float decay;
+    float inject;
+    float slope0;
+    float slope1;
+    float fold0;
+    float fold1;
+    float streak;
+    float spray; 
+} pc;
+
+const int N = 256;
+
+int wrapi(int a){
+    a = a % N;
+    return (a < 0) ? (a + N) : a;
+}
+
+float fftTile(int tile, int x, int y){
+    int ix = tile * N + wrapi(x);
+    int iy = wrapi(y);
+    return texelFetch(uFFT, ivec2(ix, iy), 0).r;
+}
+
+float heightR(int x, int y){
+    return fftTile(0, x, y);
+}
+
+vec2 dispR(int x, int y){
+    return vec2(fftTile(1, x, y), fftTile(2, x, y));
+}
+
+void main(){
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= N || gid.y >= N) return;
+
+    int x = gid.x;
+    int y = gid.y;
+
+    vec2 uv = (vec2(x, y) + 0.5) / float(N);
+
+    // surface flow from choppy displacement 
+    vec2 d = dispR(x, y);
+    vec2 flowWorld = d * pc.choppy * pc.flowScale;   
+    vec2 flowUV    = flowWorld / pc.patchSize;
+
+    vec2 uv0 = uv - flowUV * pc.dt;
+    float foamAdv = texture(uFoamPrev, uv0).r;
+
+    vec2 dir = (dot(flowUV, flowUV) > 1e-10) ? normalize(flowUV) : vec2(1.0, 0.0);
+    float texel = 1.0 / float(N);
+    vec2 duv = dir * texel * mix(1.0, 3.0, clamp(pc.streak, 0.0, 1.0));
+    float foam = 0.60 * foamAdv;
+    foam += 0.15 * texture(uFoamPrev, uv0 + duv).r;
+    foam += 0.15 * texture(uFoamPrev, uv0 - duv).r;
+    foam += 0.05 * texture(uFoamPrev, uv0 + 2.0*duv).r;
+    foam += 0.05 * texture(uFoamPrev, uv0 - 2.0*duv).r;
+
+    // exponential decay
+    foam *= exp(-pc.decay * pc.dt);
+
+    // foam where slope is high 
+    float stepW = pc.patchSize / float(N);
+    float hL = heightR(x-1, y);
+    float hR = heightR(x+1, y);
+    float hD = heightR(x, y-1);
+    float hU = heightR(x, y+1);
+
+    float dhdx = (hR - hL) / (2.0 * stepW);
+    float dhdz = (hU - hD) / (2.0 * stepW);
+    float slope = length(vec2(dhdx, dhdz));
+
+    vec2 dL = dispR(x-1, y);
+    vec2 dR = dispR(x+1, y);
+    vec2 dD = dispR(x, y-1);
+    vec2 dU = dispR(x, y+1);
+
+    float dDxdx = (dR.x - dL.x) / (2.0 * stepW);
+    float dDxdz = (dU.x - dD.x) / (2.0 * stepW);
+    float dDzdx = (dR.y - dL.y) / (2.0 * stepW);
+    float dDzdz = (dU.y - dD.y) / (2.0 * stepW);
+
+    float c = pc.choppy;
+    float J = (1.0 + c*dDxdx) * (1.0 + c*dDzdz) - (c*dDxdz) * (c*dDzdx);
+
+    // foldTerm ramps up as J drops below 0.
+    float foldTerm = smoothstep(pc.fold0, pc.fold1, -J);
+    // slopeTerm catches steep faces too.
+    float slopeTerm = smoothstep(pc.slope0, pc.slope1, slope);
+
+    // add more foam to pos crests
+    float crest = smoothstep(0.02, 0.12, heightR(x, y));
+
+    float breakness = max(slopeTerm, foldTerm);
+    float inj = breakness * pc.inject;
+    inj *= (0.25 + 0.75 * crest);
+
+    // foam lasts longer on regions that just broke
+    float persistBoost = mix(1.0, 0.55, breakness);
+    foam *= persistBoost;
+
+    foam = clamp(foam + inj * pc.dt, 0.0, 1.0);
+
+    imageStore(uFoamOut, gid, vec4(foam, 0.0, 0.0, 0.0));
+}

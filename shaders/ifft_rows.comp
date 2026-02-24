@@ -1,0 +1,58 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set=0, binding=0, rg32f) uniform readonly image2D uSrc;
+layout(set=0, binding=1, rg32f) uniform writeonly image2D uDst;
+
+layout(push_constant) uniform Push {
+    float uInvN;
+    float uFinalScale; // ignored in rows
+} pc;
+
+#define PI   3.141592653589793
+#define N    256u
+#define LOGN 8u
+
+shared vec2 sData[N];
+
+vec2 cmul(vec2 a, vec2 b){ return vec2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
+
+uint bitrev8(uint x){
+    return bitfieldReverse(x) >> (32u - 8u);
+}
+
+void main(){
+    uint row  = gl_WorkGroupID.x;
+    uint tile = gl_WorkGroupID.y;
+    uint i    = gl_LocalInvocationID.x;
+
+    int xBase = int(tile * N);
+
+    uint ir = bitrev8(i);
+    sData[i] = imageLoad(uSrc, ivec2(xBase + int(ir), int(row))).rg;
+
+    barrier();
+
+    for (uint stage = 1u; stage <= LOGN; ++stage){
+        uint m = 1u << stage;
+        uint halfM = m >> 1u;
+        uint j = i & (m - 1u);
+        if (j < halfM){
+            uint idx1 = i;
+            uint idx2 = i + halfM;
+            float ang = 2.0 * PI * float(j) / float(m); 
+            vec2 w = vec2(cos(ang), sin(ang));
+            vec2 a = sData[idx1];
+            vec2 b = sData[idx2];
+            vec2 t = cmul(b, w);
+            sData[idx1] = a + t;
+            sData[idx2] = a - t;
+        }
+        barrier();
+    }
+
+    // scale by 1/N for this dimension
+    vec2 outv = sData[i] * pc.uInvN;
+    imageStore(uDst, ivec2(xBase + int(i), int(row)), vec4(outv, 0, 0));
+}

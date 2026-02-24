@@ -1,0 +1,48 @@
+#version 450
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+#define MAX_PARTICLES 16384u
+
+struct Particle {
+    vec4 posLife; // xyz position, w life
+    vec4 velSeed; // xyz velocity, w seed/size
+};
+
+layout(set=0, binding=0, std430) buffer Particles {
+    Particle p[];
+} particles;
+
+layout(push_constant) uniform PC {
+    float dt;
+    float drag;
+    float gravity;
+    float pad;
+} pc;
+
+void main(){
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= MAX_PARTICLES) return;
+
+    Particle prt = particles.p[id];
+    float life = prt.posLife.w;
+    if (life <= 0.0) return;
+
+    vec3 pos = prt.posLife.xyz;
+    vec3 vel = prt.velSeed.xyz;
+
+    vel.y += pc.gravity * pc.dt;
+    pos += vel * pc.dt;
+    vel *= exp(-pc.drag * pc.dt);
+    life -= pc.dt;
+
+    if (life <= 0.0) {
+        prt.posLife.w = 0.0;
+        particles.p[id] = prt;
+        return;
+    }
+
+    prt.posLife.xyz = pos;
+    prt.posLife.w = life;
+    prt.velSeed.xyz = vel;
+    particles.p[id] = prt;
+}

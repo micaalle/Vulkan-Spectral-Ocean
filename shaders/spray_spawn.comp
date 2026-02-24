@@ -1,0 +1,130 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+#define N 256
+#define GRID 128
+#define MAX_PARTICLES 16384u
+
+layout(set=0, binding=0) uniform sampler2D uFFT;
+
+struct Particle {
+    vec4 posLife; // xyz position, w life
+    vec4 velSeed; // xyz velocity, w seed/size
+};
+
+layout(set=0, binding=1, std430) buffer Particles {
+    Particle p[];
+} particles;
+
+layout(set=0, binding=2, std430) buffer Counter {
+    uint head;
+} counter;
+
+layout(push_constant) uniform PC {
+    float dt;
+    float patchSize;
+    float choppy;
+    float heightScale;
+    float spawnArea;
+    float windX;
+    float windY;
+    float spawnRate;
+    float fold0;
+    float fold1;
+    float slope0;
+    float slope1;
+    float baseLife;
+    float vUp;
+    float vSide;
+    float pad;
+} pc;
+
+int wrapi(int a){ a = a % N; return (a < 0) ? (a + N) : a; }
+
+float fftTile(int tile, int x, int y){
+    int ix = tile * N + wrapi(x);
+    int iy = wrapi(y);
+    return texelFetch(uFFT, ivec2(ix, iy), 0).r;
+}
+
+float heightR(int x, int y){ return fftTile(0, x, y); }
+vec2 dispR(int x, int y){ return vec2(fftTile(1, x, y), fftTile(2, x, y)); }
+
+uint hash(uint x){
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+float rand01(uvec2 v){
+    uint h = hash(v.x ^ (v.y * 0x9e3779b9u));
+    return float(h) / 4294967295.0;
+}
+
+void main(){
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= GRID || gid.y >= GRID) return;
+
+    vec2 uv = (vec2(gid) + 0.5) / float(GRID);
+    int x = int(uv.x * float(N));
+    int y = int(uv.y * float(N));
+
+    float stepW = pc.patchSize / float(N);
+
+    // slope term
+    float hL = heightR(x-1, y);
+    float hR = heightR(x+1, y);
+    float hD = heightR(x, y-1);
+    float hU = heightR(x, y+1);
+    float dhdx = (hR - hL) / (2.0 * stepW);
+    float dhdz = (hU - hD) / (2.0 * stepW);
+    float slope = length(vec2(dhdx, dhdz));
+    float slopeTerm = smoothstep(pc.slope0, pc.slope1, slope);
+
+    // folding with Jacobian
+    vec2 dL = dispR(x-1, y);
+    vec2 dR = dispR(x+1, y);
+    vec2 dD = dispR(x, y-1);
+    vec2 dU = dispR(x, y+1);
+    float dDxdx = (dR.x - dL.x) / (2.0 * stepW);
+    float dDxdz = (dU.x - dD.x) / (2.0 * stepW);
+    float dDzdx = (dR.y - dL.y) / (2.0 * stepW);
+    float dDzdz = (dU.y - dD.y) / (2.0 * stepW);
+    float c = pc.choppy;
+    float J = (1.0 + c*dDxdx) * (1.0 + c*dDzdz) - (c*dDxdz) * (c*dDzdx);
+    float foldTerm = smoothstep(pc.fold0, pc.fold1, -J);
+
+    float breakness = max(slopeTerm, foldTerm);
+    if (breakness <= 0.001) return;
+
+    // probabilistic spawn
+    float r = rand01(uvec2(gid) ^ uvec2(uint(pc.dt*100000.0), uint(pc.spawnRate*1000.0)));
+    float p = clamp(breakness * pc.spawnRate * pc.dt, 0.0, 1.0);
+    if (r > p) return;
+
+    uint idx = atomicAdd(counter.head, 1u) % MAX_PARTICLES;
+
+    // spawn position in ocean cords around camera
+    vec2 xz = (uv - 0.5) * pc.spawnArea;
+
+    float h = heightR(x, y) * pc.heightScale;
+    vec3 pos = vec3(xz.x, h + 0.15, xz.y);
+    
+    // velo upwards
+    vec2 disp = dispR(x, y) * (pc.choppy);
+    vec2 wind = normalize(vec2(pc.windX, pc.windY) + vec2(1e-4,0.0));
+    float r2 = rand01(uvec2(gid.yx) + uvec2(idx, idx>>8));
+    vec3 vel;
+    vel.xz = disp * 0.5 + wind * (pc.vSide * (0.35 + 0.65*r2));
+    vel.y  = pc.vUp * (0.55 + 0.75*r2);
+
+    float life = pc.baseLife * (0.45 + 0.75*r2);
+
+    Particle prt;
+    prt.posLife = vec4(pos, life);
+    prt.velSeed = vec4(vel, r2);
+    particles.p[idx] = prt;
+}
