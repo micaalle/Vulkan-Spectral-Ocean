@@ -1,6 +1,14 @@
 A real-time ocean renderer in Vulkan that generates waves with a Tessendorf-style spectral FFT, adds choppy displacement, cascaded detail to reduce tiling, temporal foam + spray, TAA, refraction/absorption shading, and a floating rubber duck driven by the same surface.
 
 
+https://github.com/user-attachments/assets/08a0a335-040c-46e3-b52f-09ef9b38226b
+
+
+
+
+https://github.com/user-attachments/assets/418f06e6-37fe-45a5-9624-0c426275ad80
+
+
 ## Controls
 
 ### Camera
