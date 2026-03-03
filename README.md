@@ -12,6 +12,8 @@ https://github.com/user-attachments/assets/418f06e6-37fe-45a5-9624-0c426275ad80
 
 https://github.com/user-attachments/assets/383aa974-ebae-4e81-ab07-d62bfb5a8da5
 
+I cant say the foaming or spary works that well (or at all) but its something i'll try and fix when I revisit this project. I wanted to try and recreate the vibrant and deep waves that are simulated in Sea of Thieves and I think those last two things would bring me right where I want this project to be
+
 
 ## Controls
 
